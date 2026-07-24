@@ -6,6 +6,8 @@ import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 from pathlib import Path
 
+import pytest
+
 from podcast_creator.nodes import (
     generate_outline_node,
     generate_transcript_node,
@@ -447,6 +449,11 @@ class TestTtsConfigPassthrough:
 class TestPerSpeakerTtsOverride:
     """Tests for per-speaker TTS override resolution in generate_all_audio_node"""
 
+    @pytest.fixture(autouse=True)
+    def _skip_audio_validation(self, monkeypatch):
+        monkeypatch.setattr("podcast_creator.nodes.trim_trailing_silence", lambda _: None)
+        monkeypatch.setattr("podcast_creator.nodes.has_long_silence", lambda _: False)
+
     def _make_state(self, speakers, transcript_speakers):
         """Helper to build a minimal state for generate_all_audio_node."""
         from podcast_creator.speakers import Speaker, SpeakerProfile
@@ -657,6 +664,11 @@ class TestPerSpeakerTtsOverride:
 class TestTtsRetry:
     """Tests for retry behavior on TTS calls via generate_all_audio_node"""
 
+    @pytest.fixture(autouse=True)
+    def _skip_audio_validation(self, monkeypatch):
+        monkeypatch.setattr("podcast_creator.nodes.trim_trailing_silence", lambda _: None)
+        monkeypatch.setattr("podcast_creator.nodes.has_long_silence", lambda _: False)
+
     def _make_state(self, transcript_speakers):
         """Helper to build a minimal state for generate_all_audio_node."""
         from podcast_creator.speakers import Speaker, SpeakerProfile
@@ -752,6 +764,31 @@ class TestTtsRetry:
                 asyncio.run(generate_all_audio_node(state, config))
 
         assert mock_tts.agenerate_speech.call_count == 2
+
+    @patch("podcast_creator.nodes.generate_single_audio_clip", new_callable=AsyncMock)
+    @patch("podcast_creator.nodes.has_long_silence", side_effect=[True, False])
+    @patch("podcast_creator.nodes.trim_trailing_silence")
+    @patch("podcast_creator.nodes.asyncio.sleep", new_callable=AsyncMock)
+    def test_retries_silent_audio(self, mock_sleep, mock_trim, mock_silence, mock_generate):
+        mock_generate.return_value = Path("/tmp/clip.mp3")
+        state = self._make_state(["Alice"])
+
+        from podcast_creator.nodes import generate_all_audio_node
+
+        asyncio.run(
+            generate_all_audio_node(
+                state,
+                {
+                    "configurable": {
+                        "retry_max_attempts": 2,
+                        "retry_wait_multiplier": 1,
+                        "retry_wait_max": 1,
+                    }
+                },
+            )
+        )
+
+        assert mock_generate.await_count == 2
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ Tests for core utility functions
 """
 
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from podcast_creator.core import (
     create_outline_parser,
@@ -12,6 +13,7 @@ from podcast_creator.core import (
     create_validated_transcript_parser,
     extract_text_content,
     parse_thinking_content,
+    has_long_silence,
     trim_trailing_silence,
 )
 
@@ -31,6 +33,21 @@ class TestTrailingSilenceTrim:
         trim_trailing_silence(clip)
 
         assert clip.read_bytes() == b"trimmed"
+
+
+class TestAudioValidation:
+    def test_flags_missing_or_silent_clips(self, tmp_path, monkeypatch):
+        assert has_long_silence(tmp_path / "missing.mp3")
+
+        clip = tmp_path / "clip.mp3"
+        clip.write_bytes(b"audio")
+        monkeypatch.setattr("imageio_ffmpeg.get_ffmpeg_exe", lambda: "ffmpeg")
+        monkeypatch.setattr(
+            "podcast_creator.core.subprocess.run",
+            lambda *_args, **_kwargs: CompletedProcess([], 0, stderr="silence_start: 0"),
+        )
+
+        assert has_long_silence(clip)
 
 
 class TestOutlineParser:

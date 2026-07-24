@@ -47,6 +47,30 @@ def trim_trailing_silence(file_path: Path) -> None:
         trimmed_path.unlink(missing_ok=True)
 
 
+def has_long_silence(file_path: Path) -> bool:
+    """Return whether a generated clip has a silent run of at least three seconds."""
+    from imageio_ffmpeg import get_ffmpeg_exe
+
+    if not file_path.is_file():
+        return True
+    result = subprocess.run(
+        [
+            get_ffmpeg_exe(),
+            "-hide_banner",
+            "-i",
+            str(file_path),
+            "-af",
+            "silencedetect=noise=-45dB:d=3",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode != 0 or "silence_start:" in result.stderr
+
+
 def parse_thinking_content(content: str) -> Tuple[str, str]:
     """
     Parse message content to extract thinking content from <think> tags.

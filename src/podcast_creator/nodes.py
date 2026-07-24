@@ -17,6 +17,8 @@ from .core import (
     extract_text_content,
     get_outline_prompter,
     get_transcript_prompter,
+    has_long_silence,
+    trim_trailing_silence,
 )
 from .retry import create_retry_decorator, get_retry_config
 from .state import PodcastState
@@ -199,7 +201,11 @@ async def generate_all_audio_node(state: PodcastState, config: RunnableConfig) -
 
     @tts_retry
     async def _generate_clip(dialogue_info: Dict) -> Path:
-        return await generate_single_audio_clip(dialogue_info)
+        clip_path = await generate_single_audio_clip(dialogue_info)
+        trim_trailing_silence(clip_path)
+        if has_long_silence(clip_path):
+            raise RuntimeError(f"Generated audio clip has excessive silence: {clip_path}")
+        return clip_path
 
     logger.info(
         f"Generating {total_segments} audio clips in sequential batches of {batch_size}"
