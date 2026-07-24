@@ -17,7 +17,7 @@ from .core import (
     extract_text_content,
     get_outline_prompter,
     get_transcript_prompter,
-    has_long_silence,
+    is_usable_audio,
     trim_trailing_silence,
 )
 from .retry import create_retry_decorator, get_retry_config
@@ -203,8 +203,8 @@ async def generate_all_audio_node(state: PodcastState, config: RunnableConfig) -
     async def _generate_clip(dialogue_info: Dict) -> Path:
         clip_path = await generate_single_audio_clip(dialogue_info)
         trim_trailing_silence(clip_path)
-        if has_long_silence(clip_path):
-            raise RuntimeError(f"Generated audio clip has excessive silence: {clip_path}")
+        if not is_usable_audio(clip_path, dialogue_info["dialogue"].dialogue):
+            raise RuntimeError(f"Generated audio clip is unusable: {clip_path}")
         return clip_path
 
     logger.info(

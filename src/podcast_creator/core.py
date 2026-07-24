@@ -71,6 +71,17 @@ def has_long_silence(file_path: Path) -> bool:
     return result.returncode != 0 or "silence_start:" in result.stderr
 
 
+def is_usable_audio(file_path: Path, text: str) -> bool:
+    """Reject missing, silent, or implausibly short generated clips."""
+    if has_long_silence(file_path):
+        return False
+    clip = AudioFileClip(str(file_path))
+    try:
+        return clip.duration >= max(0.5, len(text.split()) * 0.08)
+    finally:
+        clip.close()
+
+
 def parse_thinking_content(content: str) -> Tuple[str, str]:
     """
     Parse message content to extract thinking content from <think> tags.

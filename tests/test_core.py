@@ -14,6 +14,7 @@ from podcast_creator.core import (
     extract_text_content,
     parse_thinking_content,
     has_long_silence,
+    is_usable_audio,
     trim_trailing_silence,
 )
 
@@ -48,6 +49,21 @@ class TestAudioValidation:
         )
 
         assert has_long_silence(clip)
+
+    def test_rejects_implausibly_short_audio(self, tmp_path, monkeypatch):
+        clip = tmp_path / "clip.mp3"
+        clip.write_bytes(b"audio")
+        monkeypatch.setattr("podcast_creator.core.has_long_silence", lambda _: False)
+
+        class FakeClip:
+            duration = 0.48
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("podcast_creator.core.AudioFileClip", lambda _: FakeClip())
+
+        assert not is_usable_audio(clip, "one two three four five six seven")
 
 
 class TestOutlineParser:

@@ -452,7 +452,7 @@ class TestPerSpeakerTtsOverride:
     @pytest.fixture(autouse=True)
     def _skip_audio_validation(self, monkeypatch):
         monkeypatch.setattr("podcast_creator.nodes.trim_trailing_silence", lambda _: None)
-        monkeypatch.setattr("podcast_creator.nodes.has_long_silence", lambda _: False)
+        monkeypatch.setattr("podcast_creator.nodes.is_usable_audio", lambda *_: True)
 
     def _make_state(self, speakers, transcript_speakers):
         """Helper to build a minimal state for generate_all_audio_node."""
@@ -667,7 +667,7 @@ class TestTtsRetry:
     @pytest.fixture(autouse=True)
     def _skip_audio_validation(self, monkeypatch):
         monkeypatch.setattr("podcast_creator.nodes.trim_trailing_silence", lambda _: None)
-        monkeypatch.setattr("podcast_creator.nodes.has_long_silence", lambda _: False)
+        monkeypatch.setattr("podcast_creator.nodes.is_usable_audio", lambda *_: True)
 
     def _make_state(self, transcript_speakers):
         """Helper to build a minimal state for generate_all_audio_node."""
@@ -766,7 +766,7 @@ class TestTtsRetry:
         assert mock_tts.agenerate_speech.call_count == 2
 
     @patch("podcast_creator.nodes.generate_single_audio_clip", new_callable=AsyncMock)
-    @patch("podcast_creator.nodes.has_long_silence", side_effect=[True, False])
+    @patch("podcast_creator.nodes.is_usable_audio", side_effect=[False, True])
     @patch("podcast_creator.nodes.trim_trailing_silence")
     @patch("podcast_creator.nodes.asyncio.sleep", new_callable=AsyncMock)
     def test_retries_silent_audio(self, mock_sleep, mock_trim, mock_silence, mock_generate):
