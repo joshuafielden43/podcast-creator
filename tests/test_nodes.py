@@ -349,7 +349,7 @@ class TestTtsConfigPassthrough:
             "tts_provider": "openai_compatible",
             "tts_model": "qwen",
             "voices": {"Alice": "Ryan"},
-            "tts_config": {"max_tokens": 1050},
+            "tts_config": {"lang_code": "English", "max_tokens": 1050},
         }
 
         with patch("pathlib.Path.mkdir"):
@@ -359,6 +359,7 @@ class TestTtsConfigPassthrough:
             text="Hello world",
             voice="Ryan",
             output_file=Path("/tmp/test_output/clips/0000.mp3"),
+            lang_code="English",
             max_tokens=1050,
         )
 
