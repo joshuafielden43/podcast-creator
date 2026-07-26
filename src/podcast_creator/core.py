@@ -275,6 +275,163 @@ class Transcript(BaseModel):
         }
 
 
+def _speaker_name_tokens(name: str) -> List[str]:
+    """Whitespace-split tokens with trailing title periods stripped."""
+    return [part.rstrip(".").casefold() for part in name.split() if part.strip()]
+
+
+def _is_token_subsequence(needle: List[str], haystack: List[str]) -> bool:
+    """True if needle tokens appear in order inside haystack (gaps allowed)."""
+    if not needle:
+        return False
+    i = 0
+    for token in haystack:
+        if token == needle[i]:
+            i += 1
+            if i == len(needle):
+                return True
+    return False
+
+
+def _soft_match_names(label: str, candidates: List[str]) -> List[str]:
+    """
+    Return profile names that soft-match a transcript label.
+
+    Match kinds (any is enough to include the candidate):
+    - exact, or case-insensitive exact
+    - label tokens are an ordered subsequence of name tokens
+      ("Professor Kim" → "Professor Sarah Kim")
+    - label tokens are a set-subset of name tokens
+    - single-token label equals one name token ("Alex" → "Dr. Alex Chen")
+    """
+    if not label or not candidates:
+        return []
+
+    exact = [name for name in candidates if name == label]
+    if exact:
+        return exact
+
+    casefold_exact = [
+        name for name in candidates if name.casefold() == label.casefold()
+    ]
+    if casefold_exact:
+        return casefold_exact
+
+    label_tokens = _speaker_name_tokens(label)
+    if not label_tokens:
+        return []
+
+    matches: List[str] = []
+    for name in candidates:
+        name_tokens = _speaker_name_tokens(name)
+        if not name_tokens:
+            continue
+        if _is_token_subsequence(label_tokens, name_tokens):
+            matches.append(name)
+            continue
+        if set(label_tokens) <= set(name_tokens):
+            matches.append(name)
+            continue
+        if len(label_tokens) == 1 and label_tokens[0] in set(name_tokens):
+            matches.append(name)
+    return matches
+
+
+def canonicalize_speaker_labels(
+    labels: List[str], valid_speaker_names: List[str]
+) -> Dict[str, str]:
+    """
+    Map transcript speaker labels onto configured profile names.
+
+    Prefer unique identity matches (exact / multi-token alias / nickname). When
+    labels still do not resolve, recover generation work by cardinality:
+
+    - solo profile (one configured speaker) → every label is that speaker
+    - one unclaimed profile name left → every leftover label is that speaker
+    - leftover label count equals leftover profile count → assign by order
+      (full cast replacement)
+
+    Only hard-fail when a label cannot be uniquely reconciled.
+    """
+    unique_labels = list(dict.fromkeys(labels))
+    if not valid_speaker_names:
+        raise ValueError("Invalid speaker names: no configured speakers")
+
+    # Solo profile: there is only one legal speaker, so any label means them.
+    # Do this before soft-matching so mixed exact/garbage labels never fail.
+    if len(valid_speaker_names) == 1:
+        sole = valid_speaker_names[0]
+        return {label: sole for label in unique_labels}
+
+    canonical: Dict[str, str] = {}
+    unresolved: List[str] = []
+
+    for label in unique_labels:
+        matches = _soft_match_names(label, valid_speaker_names)
+        if len(matches) == 1:
+            canonical[label] = matches[0]
+        else:
+            unresolved.append(label)
+
+    if not unresolved:
+        return canonical
+
+    remaining = [
+        name for name in valid_speaker_names if name not in set(canonical.values())
+    ]
+
+    # Residual solo: one configured speaker still unclaimed.
+    if len(remaining) == 1:
+        sole = remaining[0]
+        for label in unresolved:
+            canonical[label] = sole
+        return canonical
+
+    # Count-matched cast: prefer unique soft matches among remaining, then
+    # assign the rest by order so equal cardinalities never discard the run.
+    if remaining and len(unresolved) == len(remaining):
+        still: List[str] = []
+        claimed: set[str] = set()
+        for label in unresolved:
+            matches = [
+                name
+                for name in _soft_match_names(label, remaining)
+                if name not in claimed
+            ]
+            if len(matches) == 1:
+                canonical[label] = matches[0]
+                claimed.add(matches[0])
+            else:
+                still.append(label)
+        leftover_names = [name for name in remaining if name not in claimed]
+        if still and len(still) == len(leftover_names):
+            for label, name in zip(still, leftover_names):
+                canonical[label] = name
+            still = []
+        if not still:
+            return canonical
+        unresolved = still
+        remaining = leftover_names
+
+    still_unknown: List[str] = []
+    for label in unresolved:
+        matches = _soft_match_names(label, remaining)
+        if len(matches) != 1:
+            # Alias of an already-claimed speaker (e.g. mixed exact + short form)
+            matches = _soft_match_names(label, valid_speaker_names)
+        if len(matches) == 1:
+            canonical[label] = matches[0]
+        else:
+            still_unknown.append(label)
+
+    if still_unknown:
+        raise ValueError(
+            f"Invalid speaker names: {', '.join(still_unknown)}. "
+            f"Must be one of: {', '.join(valid_speaker_names)}"
+        )
+    return canonical
+
+
 def create_validated_transcript_parser(valid_speaker_names: List[str]):
     """
     Create a transcript parser that validates speaker names against a list of valid names
@@ -302,32 +459,8 @@ def create_validated_transcript_parser(valid_speaker_names: List[str]):
 
         @model_validator(mode="after")
         def canonicalize_speakers(self):
-            labels = list(
-                dict.fromkeys(dialogue.speaker for dialogue in self.transcript)
-            )
-            canonical = {}
-            for label in labels:
-                matches = [
-                    name
-                    for name in valid_speaker_names
-                    if label == name
-                    or label.casefold()
-                    in {part.rstrip(".").casefold() for part in name.split()}
-                ]
-                if len(matches) == 1:
-                    canonical[label] = matches[0]
-
-            unknown = [label for label in labels if label not in canonical]
-            remaining = [
-                name for name in valid_speaker_names if name not in canonical.values()
-            ]
-            if unknown and (len(remaining) == 1 or len(unknown) == len(remaining)):
-                canonical.update(zip(unknown, remaining))
-            elif unknown:
-                raise ValueError(
-                    f"Invalid speaker names: {', '.join(unknown)}. Must be one of: {', '.join(valid_speaker_names)}"
-                )
-
+            labels = [dialogue.speaker for dialogue in self.transcript]
+            canonical = canonicalize_speaker_labels(labels, valid_speaker_names)
             for dialogue in self.transcript:
                 dialogue.speaker = canonical[dialogue.speaker]
             return self

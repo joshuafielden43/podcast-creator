@@ -5,7 +5,10 @@ Tests for core utility functions
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from podcast_creator.core import (
+    canonicalize_speaker_labels,
     create_outline_parser,
     create_validated_transcript_schema,
     outline_parser,
@@ -292,6 +295,97 @@ class TestParseThinkingContent:
         assert len(parsed["transcript"]) == 2
 
 
+class TestCanonicalizeSpeakerLabels:
+    """Structural speaker recovery: aliases, solo residual, equal-count casts."""
+
+    def test_exact_names_passthrough(self):
+        mapping = canonicalize_speaker_labels(
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping == {
+            "Dr. Alex Chen": "Dr. Alex Chen",
+            "Jamie Rodriguez": "Jamie Rodriguez",
+        }
+
+    def test_multi_token_alias_of_full_name(self):
+        # Production failure shape: LLM drops the middle name on one row.
+        mapping = canonicalize_speaker_labels(
+            ["Professor Sarah Kim", "Professor Kim"],
+            ["Professor Sarah Kim"],
+        )
+        assert mapping == {
+            "Professor Sarah Kim": "Professor Sarah Kim",
+            "Professor Kim": "Professor Sarah Kim",
+        }
+
+    def test_solo_profile_maps_any_label(self):
+        mapping = canonicalize_speaker_labels(
+            ["The Host", "Narrator", "Professor Kim"],
+            ["Professor Sarah Kim"],
+        )
+        assert set(mapping.values()) == {"Professor Sarah Kim"}
+        assert len(mapping) == 3
+
+    def test_single_token_nickname(self):
+        mapping = canonicalize_speaker_labels(
+            ["Alex", "Jamie"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping == {
+            "Alex": "Dr. Alex Chen",
+            "Jamie": "Jamie Rodriguez",
+        }
+
+    def test_case_insensitive_exact(self):
+        mapping = canonicalize_speaker_labels(
+            ["professor sarah kim"],
+            ["Professor Sarah Kim"],
+        )
+        assert mapping == {"professor sarah kim": "Professor Sarah Kim"}
+
+    def test_equal_count_cast_replacement_preserves_work(self):
+        mapping = canonicalize_speaker_labels(
+            ["Host", "Guest"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping == {
+            "Host": "Dr. Alex Chen",
+            "Guest": "Jamie Rodriguez",
+        }
+
+    def test_partial_match_plus_equal_count_residual(self):
+        mapping = canonicalize_speaker_labels(
+            ["Alex", "Jordan"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping == {
+            "Alex": "Dr. Alex Chen",
+            "Jordan": "Jamie Rodriguez",
+        }
+
+    def test_ambiguous_shared_token_rejects(self):
+        with pytest.raises(ValueError, match="Invalid speaker names: Kim"):
+            canonicalize_speaker_labels(
+                ["Kim"],
+                ["Sarah Kim", "John Kim"],
+            )
+
+    def test_wrong_cardinality_rejects(self):
+        with pytest.raises(ValueError, match="Invalid speaker names: Sam"):
+            canonicalize_speaker_labels(
+                ["Sam"],
+                ["Dr. Alex Chen", "Jamie Rodriguez"],
+            )
+
+    def test_title_period_normalization(self):
+        mapping = canonicalize_speaker_labels(
+            ["Dr Alex"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping == {"Dr Alex": "Dr. Alex Chen"}
+
+
 class TestValidatedTranscriptParser:
     def test_schema_requires_configured_speakers(self):
         schema = create_validated_transcript_schema(["Dr. Alex Chen"])
@@ -299,8 +393,6 @@ class TestValidatedTranscriptParser:
         assert schema.model_validate({
             "transcript": [{"speaker": "Dr. Alex Chen", "dialogue": "Hello."}]
         })
-
-        import pytest
 
         with pytest.raises(Exception):
             schema.model_validate({
@@ -325,13 +417,28 @@ class TestValidatedTranscriptParser:
             "Jamie Rodriguez",
         ]
 
+    def test_canonicalizes_mixed_exact_and_multi_token_alias(self):
+        parser = create_validated_transcript_parser(["Professor Sarah Kim"])
+
+        transcript = parser.parse(
+            '{"transcript": ['
+            '{"speaker": "Professor Sarah Kim", "dialogue": "Welcome."}, '
+            '{"speaker": "Professor Kim", "dialogue": "Continuing."}, '
+            '{"speaker": "Professor Sarah Kim", "dialogue": "Wrap up."}'
+            "]}"
+        )
+
+        assert [dialogue.speaker for dialogue in transcript.transcript] == [
+            "Professor Sarah Kim",
+            "Professor Sarah Kim",
+            "Professor Sarah Kim",
+        ]
+
     def test_rejects_an_ambiguous_replacement_speaker(self):
         parser = create_validated_transcript_parser([
             "Dr. Alex Chen",
             "Jamie Rodriguez",
         ])
-
-        import pytest
 
         with pytest.raises(Exception, match="Invalid speaker names: Sam"):
             parser.parse('{"transcript": [{"speaker": "Sam", "dialogue": "Hello."}]}')
