@@ -133,6 +133,7 @@ async def generate_transcript_node(state: PodcastState, config: RunnableConfig) 
     assert outline is not None, "outline must be provided"
 
     transcript: List[Dialogue] = []
+    segment_end_indices: List[int] = []
     for i, segment in enumerate(outline.segments):
         logger.info(
             f"Generating transcript for segment {i + 1}/{len(outline.segments)}: {segment.name}"
@@ -155,10 +156,15 @@ async def generate_transcript_node(state: PodcastState, config: RunnableConfig) 
         transcript_prompt_rendered = transcript_prompt.render(data)
         result = await _invoke_and_parse(transcript_prompt_rendered)
         transcript.extend(result.transcript)
+        if transcript:
+            segment_end_indices.append(len(transcript) - 1)
 
     logger.info(f"Generated transcript with {len(transcript)} dialogue segments")
 
-    return {"transcript": transcript}
+    return {
+        "transcript": transcript,
+        "segment_end_indices": segment_end_indices,
+    }
 
 
 def route_audio_generation(state: PodcastState, config: RunnableConfig) -> str:
@@ -318,9 +324,12 @@ async def combine_audio_node(state: PodcastState, config: RunnableConfig) -> Dic
     clips_dir = state["output_dir"] / "clips"
     audio_dir = state["output_dir"] / "audio"
 
-    # Combine audio files
+    # Combine audio files; ~1s silence after each outline segment (chapter turn)
     result = await combine_audio_files(
-        clips_dir, f"{state['episode_name']}.mp3", audio_dir
+        clips_dir,
+        f"{state['episode_name']}.mp3",
+        audio_dir,
+        segment_end_indices=state.get("segment_end_indices") or [],
     )
 
     final_path = Path(result["combined_audio_path"])

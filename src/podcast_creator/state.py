@@ -16,6 +16,8 @@ class PodcastState(TypedDict):
     # Generated content
     outline: Optional[Outline]
     transcript: List[Dialogue]
+    # 0-based index of the last dialogue clip in each outline segment
+    segment_end_indices: List[int]
 
     # Audio processing
     audio_clips: Annotated[List[Path], add]

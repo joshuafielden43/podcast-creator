@@ -3,15 +3,18 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
 
 from langchain_core.output_parsers.pydantic import PydanticOutputParser
 from loguru import logger
-from moviepy import AudioFileClip, concatenate_audioclips
+from moviepy import AudioArrayClip, AudioFileClip, concatenate_audioclips
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Compile regex pattern once for better performance
 THINK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+# Pause between outline segments (chapters) when combining dialogue clips.
+SEGMENT_BOUNDARY_GAP_SECONDS = 1.0
 
 
 def trim_trailing_silence(file_path: Path) -> None:
@@ -523,18 +526,59 @@ transcript_prompt = get_transcript_prompter()
 # Legacy functions removed - use create_podcast from graph.py instead
 
 
+def make_silence_clip(
+    duration: float, *, fps: int = 44100, nchannels: int = 1
+) -> AudioArrayClip:
+    """Return a silent clip of the given duration (seconds)."""
+    import numpy as np
+
+    frames = max(1, int(round(duration * fps)))
+    shape = (frames, nchannels) if nchannels > 1 else (frames, 1)
+    return AudioArrayClip(np.zeros(shape, dtype=np.float32), fps=fps)
+
+
+def interleave_segment_gaps(
+    clips: Sequence[Any],
+    segment_end_indices: Optional[Iterable[int]] = None,
+    gap_seconds: float = SEGMENT_BOUNDARY_GAP_SECONDS,
+) -> List[Any]:
+    """
+    Insert silence after the last clip of each outline segment (except the final one).
+
+    ``segment_end_indices`` are 0-based indices into ``clips`` for the last
+    dialogue row of each outline segment. Missing/empty means no gaps.
+    """
+    if not clips or not segment_end_indices or gap_seconds <= 0:
+        return list(clips)
+
+    ends = {int(i) for i in segment_end_indices}
+    last = len(clips) - 1
+    ref = clips[0]
+    fps = int(getattr(ref, "fps", None) or 44100)
+    nchannels = int(getattr(ref, "nchannels", None) or 1)
+
+    timeline: List[Any] = []
+    for i, clip in enumerate(clips):
+        timeline.append(clip)
+        if i in ends and i < last:
+            timeline.append(
+                make_silence_clip(gap_seconds, fps=fps, nchannels=nchannels)
+            )
+    return timeline
+
+
 async def combine_audio_files(
-    audio_dir: Union[Path, str], final_filename: str, final_output_dir: Union[Path, str]
+    audio_dir: Union[Path, str],
+    final_filename: str,
+    final_output_dir: Union[Path, str],
+    segment_end_indices: Optional[Sequence[int]] = None,
+    inter_segment_gap_seconds: float = SEGMENT_BOUNDARY_GAP_SECONDS,
 ):
     """
     Combines multiple audio files into a single MP3 file using moviepy.
-    Expects 'audio_segments_data' in inputs: a list of strings, where each string is a path to an audio file.
-    Also expects 'final_filename' in inputs: a string for the desired output filename (e.g., "podcast_episode.mp3").
-    Example input: {
-        "audio_segments_data": ["path/to/audio1.mp3", "path/to/audio2.mp3"],
-        "final_filename": "my_podcast.mp3"
-    }
-    Output: {"combined_audio_path": "output/audio/my_podcast.mp3"}
+
+    When ``segment_end_indices`` is provided, inserts a short silence after the
+    last dialogue clip of each outline segment so chapter turns are audible.
     """
     logger.info("[Core Function] combine_audio_files called.")
     if isinstance(audio_dir, str):
@@ -587,13 +631,21 @@ async def combine_audio_files(
         logger.error("combine_audio_files: No valid audio clips could be loaded.")
         return {"combined_audio_path": "ERROR: No valid clips"}
 
+    timeline = interleave_segment_gaps(
+        clips,
+        segment_end_indices=segment_end_indices,
+        gap_seconds=inter_segment_gap_seconds,
+    )
+    speech_ids = {id(c) for c in clips}
+    silence_clips = [c for c in timeline if id(c) not in speech_ids]
+
     try:
         # Ensure all clips are closed after concatenation, even if it fails during the process.
         # MoviePy's concatenate_audioclips might not close source clips if it errors out mid-way.
-        final_clip = concatenate_audioclips(clips)
+        final_clip = concatenate_audioclips(timeline)
     except Exception as e:
         logger.error(f"Error during concatenate_audioclips: {e}")
-        for clip_obj in clips:
+        for clip_obj in list(clips) + silence_clips:
             try:
                 clip_obj.close()
             except Exception as close_exc:
@@ -633,7 +685,7 @@ async def combine_audio_files(
         return {"combined_audio_path": f"ERROR: Failed to write output audio - {e}"}
     finally:
         final_clip.close()  # Close the final concatenated clip
-        for clip_obj in clips:  # Ensure all source clips are closed
+        for clip_obj in list(clips) + silence_clips:
             try:
                 clip_obj.close()
             except Exception as close_exc:

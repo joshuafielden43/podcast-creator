@@ -15,11 +15,48 @@ from podcast_creator.core import (
     clean_thinking_content,
     create_validated_transcript_parser,
     extract_text_content,
+    interleave_segment_gaps,
+    make_silence_clip,
     parse_thinking_content,
     has_long_silence,
     is_usable_audio,
     trim_trailing_silence,
 )
+
+
+class TestSegmentBoundaryGaps:
+    def test_inserts_silence_after_segment_ends_but_not_after_final_clip(self):
+        class FakeClip:
+            def __init__(self, name):
+                self.name = name
+                self.fps = 44100
+                self.nchannels = 1
+
+        clips = [FakeClip("a"), FakeClip("b"), FakeClip("c"), FakeClip("d")]
+        # Two outline segments: clips 0-1 and 2-3
+        timeline = interleave_segment_gaps(
+            clips, segment_end_indices=[1, 3], gap_seconds=1.0
+        )
+
+        assert len(timeline) == 5  # four speech + one gap after first segment
+        assert timeline[0] is clips[0]
+        assert timeline[1] is clips[1]
+        assert timeline[2] is not clips[2]  # silence
+        assert getattr(timeline[2], "duration", None) == 1.0
+        assert timeline[3] is clips[2]
+        assert timeline[4] is clips[3]
+
+    def test_no_gaps_without_boundaries(self):
+        clips = [object(), object()]
+        assert interleave_segment_gaps(clips, segment_end_indices=None) == clips
+        assert interleave_segment_gaps(clips, segment_end_indices=[]) == clips
+
+    def test_make_silence_clip_duration(self):
+        silence = make_silence_clip(1.0, fps=44100, nchannels=1)
+        try:
+            assert abs(silence.duration - 1.0) < 1e-6
+        finally:
+            silence.close()
 
 
 class TestTrailingSilenceTrim:

@@ -147,6 +147,7 @@ async def create_podcast(
         language=resolved_language,
         outline=None,
         transcript=[],
+        segment_end_indices=[],
         audio_clips=[],
         final_output_file_path=None,
         output_dir=output_path,
