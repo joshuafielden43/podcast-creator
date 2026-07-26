@@ -68,6 +68,22 @@ class TestAudioValidation:
 
         assert not is_usable_audio(clip, "one two three four five six seven")
 
+    def test_rejects_truncated_clips_that_pass_the_old_0_08_floor(self, tmp_path, monkeypatch):
+        # 7 words * 0.08 = 0.56s would have passed; 0.30 s/word needs 2.1s.
+        clip = tmp_path / "clip.mp3"
+        clip.write_bytes(b"audio")
+        monkeypatch.setattr("podcast_creator.core.has_long_silence", lambda _: False)
+
+        class FakeClip:
+            duration = 1.0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("podcast_creator.core.AudioFileClip", lambda _: FakeClip())
+
+        assert not is_usable_audio(clip, "one two three four five six seven")
+
 
 class TestOutlineParser:
     def test_accepts_outline_wrapper(self):

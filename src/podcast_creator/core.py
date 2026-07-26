@@ -28,7 +28,11 @@ def trim_trailing_silence(file_path: Path) -> None:
                 "-i",
                 str(file_path),
                 "-af",
-                "areverse,silenceremove=start_periods=1:start_duration=1:start_threshold=-45dB:start_silence=0.25,areverse",
+                # start_duration=1 demanded a full second of continuous loud
+                # audio and ate sentence endings (1.3–1.7s speech loss/clip).
+                # 0.02 / -50dB / 0.30 still strips generator padding without
+                # chewing real speech (verified on episode a542e579 raw clips).
+                "areverse,silenceremove=start_periods=1:start_duration=0.02:start_threshold=-50dB:start_silence=0.30,areverse",
                 "-codec:a",
                 "libmp3lame",
                 str(trimmed_path),
@@ -77,7 +81,9 @@ def is_usable_audio(file_path: Path, text: str) -> bool:
         return False
     clip = AudioFileClip(str(file_path))
     try:
-        return clip.duration >= max(0.5, len(text.split()) * 0.08)
+        # 0.08 s/word allowed 12.5 w/s (4x speech), so truncated clips shipped.
+        # 0.30 s/word ≈ 3.3 w/s ceiling; @tts_retry regenerates failures.
+        return clip.duration >= max(0.5, len(text.split()) * 0.30)
     finally:
         clip.close()
 
