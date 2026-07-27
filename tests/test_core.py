@@ -398,14 +398,22 @@ class TestCanonicalizeSpeakerLabels:
         assert mapping == {"professor sarah kim": "Professor Sarah Kim"}
 
     def test_equal_count_cast_replacement_preserves_work(self):
+        # Sorted-label zip: Guest before Host alphabetically → stable across
+        # segments regardless of first-appearance order (#1590).
         mapping = canonicalize_speaker_labels(
             ["Host", "Guest"],
             ["Dr. Alex Chen", "Jamie Rodriguez"],
         )
         assert mapping == {
-            "Host": "Dr. Alex Chen",
-            "Guest": "Jamie Rodriguez",
+            "Guest": "Dr. Alex Chen",
+            "Host": "Jamie Rodriguez",
         }
+        # Same assignment when appearance order flips.
+        mapping_flipped = canonicalize_speaker_labels(
+            ["Guest", "Host"],
+            ["Dr. Alex Chen", "Jamie Rodriguez"],
+        )
+        assert mapping_flipped == mapping
 
     def test_partial_match_plus_equal_count_residual(self):
         mapping = canonicalize_speaker_labels(
@@ -423,6 +431,18 @@ class TestCanonicalizeSpeakerLabels:
                 ["Kim"],
                 ["Sarah Kim", "John Kim"],
             )
+
+    def test_shared_token_prefers_already_claimed_alias(self):
+        # One speaker already claimed: short form "Kim" must not residual-solo
+        # onto the other Kim (#1590).
+        mapping = canonicalize_speaker_labels(
+            ["Sarah Kim", "Kim"],
+            ["Sarah Kim", "John Kim"],
+        )
+        assert mapping == {
+            "Sarah Kim": "Sarah Kim",
+            "Kim": "Sarah Kim",
+        }
 
     def test_wrong_cardinality_rejects(self):
         with pytest.raises(ValueError, match="Invalid speaker names: Sam"):

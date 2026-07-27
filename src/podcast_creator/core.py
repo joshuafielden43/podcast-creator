@@ -385,8 +385,30 @@ def canonicalize_speaker_labels(
     if not unresolved:
         return canonical
 
+    claimed_names = set(canonical.values())
     remaining = [
-        name for name in valid_speaker_names if name not in set(canonical.values())
+        name for name in valid_speaker_names if name not in claimed_names
+    ]
+
+    # Prefer alias-of-already-claimed over residual-solo absorption (#1590).
+    # Example: cast [Sarah Kim, John Kim], labels [Sarah Kim, Kim] — "Kim"
+    # soft-matches both, but Sarah is already speaking so the short form
+    # almost certainly means her, not the unclaimed John via residual solo.
+    still_after_claimed_alias: List[str] = []
+    for label in unresolved:
+        matches = _soft_match_names(label, valid_speaker_names)
+        claimed_hits = [m for m in matches if m in claimed_names]
+        if len(claimed_hits) == 1:
+            canonical[label] = claimed_hits[0]
+            continue
+        still_after_claimed_alias.append(label)
+    unresolved = still_after_claimed_alias
+    if not unresolved:
+        return canonical
+
+    claimed_names = set(canonical.values())
+    remaining = [
+        name for name in valid_speaker_names if name not in claimed_names
     ]
 
     # Residual solo: one configured speaker still unclaimed.
@@ -397,7 +419,9 @@ def canonicalize_speaker_labels(
         return canonical
 
     # Count-matched cast: prefer unique soft matches among remaining, then
-    # assign the rest by order so equal cardinalities never discard the run.
+    # assign the rest by *sorted* label order so equal cardinalities never
+    # discard the run and assignment is stable across segments (first-
+    # appearance order flipped mid-episode is worse than a consistent zip).
     if remaining and len(unresolved) == len(remaining):
         still: List[str] = []
         claimed: set[str] = set()
@@ -414,7 +438,7 @@ def canonicalize_speaker_labels(
                 still.append(label)
         leftover_names = [name for name in remaining if name not in claimed]
         if still and len(still) == len(leftover_names):
-            for label, name in zip(still, leftover_names):
+            for label, name in zip(sorted(still), leftover_names):
                 canonical[label] = name
             still = []
         if not still:

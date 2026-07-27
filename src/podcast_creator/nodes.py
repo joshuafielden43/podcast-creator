@@ -154,7 +154,18 @@ async def generate_transcript_node(state: PodcastState, config: RunnableConfig) 
 
         transcript_prompt = get_transcript_prompter()
         transcript_prompt_rendered = transcript_prompt.render(data)
-        result = await _invoke_and_parse(transcript_prompt_rendered)
+        # Per-segment outer retry (#1592): a parse failure on one segment must
+        # not throw away outline + prior segments already paid for. The
+        # decorator still covers transport retries; this is one extra full
+        # completion attempt for that segment only.
+        try:
+            result = await _invoke_and_parse(transcript_prompt_rendered)
+        except Exception as segment_err:
+            logger.warning(
+                f"Transcript segment {i + 1}/{len(outline.segments)} "
+                f"({segment.name!r}) failed ({segment_err}); retrying once"
+            )
+            result = await _invoke_and_parse(transcript_prompt_rendered)
         transcript.extend(result.transcript)
         if transcript:
             segment_end_indices.append(len(transcript) - 1)
